@@ -1,12 +1,43 @@
 const express = require('express');
 const multer = require('multer');
-const fs = require('fs').promises;
+const fs = require('fs').promises; // Keep fs for file operations (unlink)
 const path = require('path');
 const cors = require('cors');
+const { Pool } = require('pg'); // Import Pool from pg
 
 const app = express();
-const PORT = 3000;
-const DB_PATH = path.join(__dirname, 'db.json');
+const PORT = process.env.PORT || 3000;
+
+// PostgreSQL Pool configuration
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false // Required for Render's PostgreSQL connections
+    }
+});
+
+// Function to initialize the database table
+async function initializeDatabase() {
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS reparaciones (
+                id BIGSERIAL PRIMARY KEY,
+                descripcion TEXT NOT NULL,
+                ubicacion TEXT,
+                fotoAntes TEXT NOT NULL,
+                fotoDespues TEXT NOT NULL,
+                timestamp TIMESTAMPTZ DEFAULT NOW()
+            );
+        `);
+        console.log('Tabla reparaciones verificada/creada en PostgreSQL.');
+    } catch (err) {
+        console.error('Error al inicializar la base de datos:', err);
+        process.exit(1); // Exit if database connection/table creation fails
+    }
+}
+
+// Call initializeDatabase before starting the server
+initializeDatabase();
 
 // --- Middlewares ---
 app.use(cors());
@@ -51,51 +82,22 @@ app.post('/upload', upload.fields([{ name: 'fotoAntes', maxCount: 1 }, { name: '
     const fotoDespues = req.files['fotoDespues'] && req.files['fotoDespues'][0];
 
     if (!descripcion || !fotoAntes || !fotoDespues) {
-        // Si la validación falla, intenta limpiar los archivos subidos para no dejar huérfanos
         if (fotoAntes) await fs.unlink(fotoAntes.path).catch(err => console.error("Error al limpiar fotoAntes:", err));
         if (fotoDespues) await fs.unlink(fotoDespues.path).catch(err => console.error("Error al limpiar fotoDespues:", err));
         return res.status(400).json({ message: 'Todos los campos son requeridos.' });
     }
 
     try {
-        let reparaciones = [];
-        try {
-            const data = await fs.readFile(DB_PATH, 'utf8');
-            // Solo parsear si el archivo tiene contenido
-            if (data.trim() !== '') {
-                reparaciones = JSON.parse(data);
-            }
-        } catch (error) {
-            // Si el archivo no existe (ENOENT), se ignora el error y se procede con un array vacío.
-            // Para cualquier otro error de lectura, se lanza una excepción.
-            if (error.code !== 'ENOENT') {
-                throw new Error(`Error al leer la base de datos: ${error.message}`);
-            }
-        }
-
-        const nuevaReparacion = {
-            id: Date.now(),
-            descripcion: descripcion,
-            ubicacion: ubicacion || 'No especificada',
-            fotoAntes: fotoAntes.filename,
-            fotoDespues: fotoDespues.filename,
-            timestamp: new Date().toISOString()
-        };
-
-        reparaciones.push(nuevaReparacion);
-        
-        await fs.writeFile(DB_PATH, JSON.stringify(reparaciones, null, 2));
-        
-        res.status(201).json(nuevaReparacion);
+        const result = await pool.query(
+            'INSERT INTO reparaciones(descripcion, ubicacion, fotoAntes, fotoDespues) VALUES($1, $2, $3, $4) RETURNING *;',
+            [descripcion, ubicacion || 'No especificada', fotoAntes.filename, fotoDespues.filename]
+        );
+        res.status(201).json(result.rows[0]);
 
     } catch (error) {
-        // Captura errores de JSON.parse (si está mal formado) o de fs.writeFile
         console.error(`[SERVER] Error en la ruta /upload: ${error.message}`);
-        
-        // Limpia los archivos subidos si algo falló durante la escritura en la BD
         if (fotoAntes) await fs.unlink(fotoAntes.path).catch(err => console.error("Error al limpiar fotoAntes:", err));
         if (fotoDespues) await fs.unlink(fotoDespues.path).catch(err => console.error("Error al limpiar fotoDespues:", err));
-
         res.status(500).json({ message: 'Error en el servidor al guardar la reparación.' });
     }
 });
@@ -103,12 +105,10 @@ app.post('/upload', upload.fields([{ name: 'fotoAntes', maxCount: 1 }, { name: '
 // Ruta para obtener todas las reparaciones
 app.get('/reparaciones', async (req, res) => {
     try {
-        const data = await fs.readFile(DB_PATH, 'utf8');
-        res.json(JSON.parse(data));
+        const result = await pool.query('SELECT * FROM reparaciones ORDER BY timestamp DESC');
+        res.json(result.rows);
     } catch (err) {
-        if (err.code === 'ENOENT') {
-            return res.json([]);
-        }
+        console.error('Error al obtener reparaciones:', err);
         res.status(500).json({ message: 'Error al leer las reparaciones.' });
     }
 });
@@ -116,8 +116,9 @@ app.get('/reparaciones', async (req, res) => {
 // Ruta para descargar el reporte en CSV
 app.get('/download-csv', async (req, res) => {
     try {
-        const data = await fs.readFile(DB_PATH, 'utf8');
-        let reparaciones = JSON.parse(data);
+        const result = await pool.query('SELECT * FROM reparaciones ORDER BY timestamp DESC');
+        let reparaciones = result.rows;
+
         if (reparaciones.length === 0) {
             return res.status(404).send('No hay datos para exportar.');
         }
@@ -137,10 +138,8 @@ app.get('/download-csv', async (req, res) => {
         res.attachment(`reporte-reparaciones-${Date.now()}.csv`);
         res.send(csv);
     } catch (err) {
-        if (err.code === 'ENOENT') {
-            return res.status(404).send('No hay datos para exportar.');
-        }
-        res.status(500).send('Error al leer la base de datos.');
+        console.error('Error al generar CSV:', err);
+        res.status(500).send('Error en el servidor durante la exportación CSV.');
     }
 });
 
@@ -150,43 +149,37 @@ app.delete('/reparaciones/:id', async (req, res) => {
     console.log(`[SERVER] Petición DELETE recibida para ID: ${reparacionId}`);
 
     try {
-        let data = await fs.readFile(DB_PATH, 'utf8');
-        let reparaciones = JSON.parse(data);
-        console.log(`[SERVER] Reparaciones antes de eliminar (${reparaciones.length} items):`, reparaciones.map(r => r.id));
+        // 1. Obtener la información de la reparación para eliminar los archivos de imagen
+        const result = await pool.query('SELECT fotoAntes, fotoDespues FROM reparaciones WHERE id = $1', [reparacionId]);
+        const reparacionEliminada = result.rows[0];
 
-        const indexToDelete = reparaciones.findIndex(rep => rep.id === reparacionId);
-
-        if (indexToDelete === -1) {
+        if (!reparacionEliminada) {
             console.warn(`[SERVER] Reparación con ID ${reparacionId} no encontrada.`);
             return res.status(404).json({ message: 'Reparación no encontrada.' });
         }
 
-        const reparacionEliminada = reparaciones[indexToDelete];
-        console.log(`[SERVER] Encontrada reparación para eliminar:`, reparacionEliminada.id);
-
-        // 1. Eliminar los archivos de imagen asociados
+        // 2. Eliminar los archivos de imagen asociados
         const fotoAntesPath = path.join(__dirname, 'uploads', reparacionEliminada.fotoAntes);
         const fotoDespuesPath = path.join(__dirname, 'uploads', reparacionEliminada.fotoDespues);
 
         console.log(`[SERVER] Intentando eliminar archivos: ${fotoAntesPath}, ${fotoDespuesPath}`);
 
-        await fs.unlink(fotoAntesPath);
+        await fs.unlink(fotoAntesPath).catch(err => console.error(`Error al eliminar fotoAntes (${fotoAntesPath}):`, err));
         console.log(`[SERVER] Foto Antes eliminada: ${fotoAntesPath}`);
-        await fs.unlink(fotoDespuesPath);
+        await fs.unlink(fotoDespuesPath).catch(err => console.error(`Error al eliminar fotoDespues (${fotoDespuesPath}):`, err));
         console.log(`[SERVER] Foto Después eliminada: ${fotoDespuesPath}`);
 
-        // 2. Eliminar la entrada de la base de datos
-        reparaciones.splice(indexToDelete, 1);
-        console.log(`[SERVER] Reparaciones después de eliminar (${reparaciones.length} items):`, reparaciones.map(r => r.id));
+        // 3. Eliminar la entrada de la base de datos
+        const deleteResult = await pool.query('DELETE FROM reparaciones WHERE id = $1', [reparacionId]);
 
-        await fs.writeFile(DB_PATH, JSON.stringify(reparaciones, null, 2));
-        console.log(`[SERVER] db.json actualizado con éxito.`);
+        if (deleteResult.rowCount === 0) {
+            return res.status(404).json({ message: 'Reparación no encontrada en la base de datos.' });
+        }
+
+        console.log(`[SERVER] Reparación con ID ${reparacionId} eliminada con éxito de la base de datos.`);
         res.status(200).json({ message: 'Reparación eliminada con éxito.' });
     } catch (err) {
         console.error(`[SERVER] Error en la operación de eliminación: ${err.message}`);
-        if (err.code === 'ENOENT') {
-            return res.status(404).json({ message: 'No hay reparaciones para eliminar o archivo no encontrado.' });
-        }
         res.status(500).json({ message: 'Error en el servidor durante la eliminación.' });
     }
 });
