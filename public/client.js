@@ -14,20 +14,64 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let todasLasReparaciones = []; // Caché local de las reparaciones
 
+    function formatUbicacion(ubicacion) {
+        const coordRegex = /^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/;
+        if (ubicacion && coordRegex.test(ubicacion.trim())) {
+            // Es una coordenada, crear enlace a Google Maps
+            const sanitizedUbicacion = sanitizarHTML(ubicacion);
+            return `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(ubicacion)}" target="_blank" rel="noopener noreferrer">${sanitizedUbicacion} <i class="bi bi-geo-alt-fill"></i></a>`;
+        }
+        // No es una coordenada, o está vacío, devolver el texto sanitizado
+        return sanitizarHTML(ubicacion);
+    }
+
     // Cargar reparaciones iniciales
     cargarReparaciones();
+
+    const btnGeolocalizar = document.getElementById('btnGeolocalizar');
+
+    // --- MANEJO DE LA GEOLOCALIZACIÓN ---
+    btnGeolocalizar.addEventListener('click', () => {
+        if (navigator.geolocation) {
+            btnGeolocalizar.disabled = true;
+            btnGeolocalizar.innerHTML = 'Obteniendo...';
+            navigator.geolocation.getCurrentPosition(async (position) => {
+                const { latitude, longitude } = position.coords;
+                // Opcional: Usar una API de geocodificación inversa para obtener la dirección
+                // Por simplicidad, aquí solo guardamos las coordenadas.
+                document.getElementById('ubicacion').value = `${latitude}, ${longitude}`;
+                btnGeolocalizar.disabled = false;
+                btnGeolocalizar.innerHTML = 'Usar mi ubicación';
+            }, (error) => {
+                console.error("Error de geolocalización:", error);
+                let errorMessage = `Error al obtener la ubicación: ${error.message}`;
+                if (error.code === error.PERMISSION_DENIED) {
+                    errorMessage = 'Permiso de geolocalización denegado. Por favor, habilita los servicios de ubicación para tu navegador en la configuración de tu sistema y navegador.';
+                } else if (error.code === error.POSITION_UNAVAILABLE) {
+                    errorMessage = 'Información de ubicación no disponible.';
+                } else if (error.code === error.TIMEOUT) {
+                    errorMessage = 'La solicitud para obtener la ubicación ha caducado.';
+                }
+                alert(errorMessage);
+                btnGeolocalizar.disabled = false;
+                btnGeolocalizar.innerHTML = 'Usar mi ubicación';
+            });
+        } else {
+            alert('La geolocalización no es soportada por este navegador.');
+        }
+    });
 
     // --- MANEJO DEL FORMULARIO DE SUBIDA ---
     uploadForm.addEventListener('submit', async (e) => {
         e.preventDefault();
-        // ... (el resto del código del formulario de subida se mantiene igual)
         const formData = new FormData();
         formData.append('descripcion', document.getElementById('descripcion').value);
+        formData.append('ubicacion', document.getElementById('ubicacion').value);
         formData.append('fotoAntes', document.getElementById('fotoAntes').files[0]);
         formData.append('fotoDespues', document.getElementById('fotoDespues').files[0]);
 
         statusDiv.innerHTML = `<div class="alert alert-info">Subiendo...</div>`;
-        uploadForm.querySelector('button').disabled = true;
+        uploadForm.querySelector('button[type="submit"]').disabled = true;
 
         try {
             const response = await fetch('/upload', {
@@ -106,6 +150,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                     <div class="card-body">
                         <p class="card-text">${sanitizarHTML(rep.descripcion)}</p>
+                        <p class="card-text"><small class="text-muted">Ubicación: ${formatUbicacion(rep.ubicacion)}</small></p>
                     </div>
                     <!-- Contenedor de la galería para lightgallery -->
                     <div class="row g-0" id="${galleryId}">

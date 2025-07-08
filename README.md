@@ -5,6 +5,7 @@ Esta es una aplicación web sencilla pero funcional para llevar un registro visu
 ## ✨ Funcionalidades Principales
 
 - **Registro de Reparaciones**: Añade nuevas reparaciones con una descripción detallada y sube dos imágenes: una mostrando el estado previo y otra el estado posterior al trabajo.
+- **Geolocalización Integrada**: Permite usar la ubicación actual del dispositivo para rellenar el campo de ubicación. Si la ubicación es una coordenada, se mostrará como un enlace directo a Google Maps en el historial.
 - **Historial Visual**: Visualiza todas las reparaciones en una galería tipo cuadrícula, ordenada cronológicamente (de la más reciente a la más antigua).
 - **Galería de Imágenes**: Haz clic en las imágenes de cualquier reparación para verlas en tamaño completo con una galería interactiva (lightbox).
 - **Búsqueda y Filtrado**:
@@ -53,6 +54,9 @@ Sigue estos pasos para poner en marcha la aplicación en tu máquina local.
 
 4.  **Abre la aplicación**:
     Abre tu navegador web y ve a `http://localhost:3000`. ¡Listo!
+
+    **Nota sobre Geolocalización y HTTPS:**
+    Los navegadores modernos requieren un contexto seguro (HTTPS) para acceder a la geolocalización. Si experimentas problemas de permisos al usar la función "Usar mi ubicación", asegúrate de que estás accediendo a la aplicación a través de `http://localhost` (que a menudo se trata como seguro para desarrollo) o considera configurar HTTPS para tu entorno local. Puedes usar herramientas como `mkcert` para generar certificados autofirmados.
 
 ## ☁️ Despliegue
 
